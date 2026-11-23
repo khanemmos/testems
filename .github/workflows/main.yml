@@ -14,9 +14,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall set rule name="Remote Desktop - User Mode (TCP-In)" new enable=yes
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxIdleTime" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxDisconnectionTime" -Value 0 -Force
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change standby-timeout-ac 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
 
       - name: Create RDP User with Fixed Password
@@ -25,7 +28,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $password = "${{ secrets.RDP_PASSWORD }}"
           if ([string]::IsNullOrWhiteSpace($password)) {
-            $password = "RdpSecure123!"
+            $password = "RdpPass2026"
           }
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
@@ -33,7 +36,7 @@ jobs:
             Remove-LocalUser -Name "RDPUser"
           }
 
-          New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
+          New-LocalUser -Name "RDPUser" -Password $securePass -PasswordNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
 
@@ -66,16 +69,22 @@ jobs:
       - name: Maintain Connection
         shell: powershell
         run: |
+          $tailscalePath = "${env:ProgramFiles}\Tailscale\tailscale.exe"
           Write-Host ""
           Write-Host "=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDPUser"
+          Write-Host "Username: .\RDPUser"
           Write-Host "Password: $env:RDP_PASSWORD"
           Write-Host "=================="
           Write-Host ""
 
-          # ~350 minutes (70 iterations * 300s) before 360m runner limit
           for ($i = 0; $i -lt 70; $i++) {
-            Write-Host "[$(Get-Date)] RDP Active"
+            $currentIP = & $tailscalePath ip -4 2>$null
+            if ([string]::IsNullOrWhiteSpace($currentIP)) {
+              Write-Host "[$(Get-Date)] Tailscale dropped, reconnecting..."
+              & $tailscalePath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+            } else {
+              Write-Host "[$(Get-Date)] RDP Active ($currentIP)"
+            }
             Start-Sleep -Seconds 300
           }
